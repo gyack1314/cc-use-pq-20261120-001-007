@@ -7,10 +7,14 @@ from .observatory.catalog import Catalog, normalize_metric, normalize_station, n
 from .observatory.readings import Readings, normalize_reading
 from .publication import Publication
 from .residents import Residents, normalize_population
+from .venue import (Venue, normalize_arrangement, normalize_closure, normalize_service,
+                    normalize_window, operations_spec)
 
 
 NORMALIZERS = {"zone": normalize_zone, "metric": normalize_metric, "station": normalize_station,
-               "population": normalize_population, "action": normalize_action, "reading": normalize_reading}
+               "population": normalize_population, "action": normalize_action, "reading": normalize_reading,
+               "window": normalize_window, "service": normalize_service,
+               "closure": normalize_closure, "arrangement": normalize_arrangement}
 
 
 class Application:
@@ -30,6 +34,7 @@ class Application:
         Readings(snapshot).validate()
         Residents(snapshot).validate()
         Adaptation(snapshot).validate()
+        Venue(snapshot).validate()
 
     def ingest(self, bundle):
         shape(bundle, ("id", "source", "records"))
@@ -93,6 +98,13 @@ class Application:
                  "residents": residents.period_coverage(zone, spec["start"], spec["end"]),
                  "actions": adaptation.utilization(zone, spec["metric"], spec["start"], spec["end"], readings, spec["minimum_coverage"])}
                 for zone in spec["zones"]]}
+
+    def operations(self, spec, *, seq=None):
+        spec = operations_spec(spec)
+        with self.ledger.transaction():
+            watermark = self.ledger.watermark() if seq is None else integer(seq, "seq")
+            snapshot = self.ledger.snapshot(watermark)
+            return {"watermark": watermark, **Venue(snapshot).operations(spec, Adaptation(snapshot))}
 
     def history(self, kind, identity):
         with self.ledger.transaction():

@@ -1,9 +1,10 @@
 from copy import deepcopy
 from decimal import Decimal
 
-from ..adaptation import Adaptation
-from ..contracts import (decimal_text, identifier, integer, number, overlaps,
-                         query_spec, require, shape)
+from ..adaptation import Adaptation, facility_clash
+from ..contracts import (DomainError, as_decimal, decimal_text, emit_count, identifier, integer,
+                         number, overlaps, query_spec, require, shape)
+from ..venue import Venue
 from .exposure import Exposure
 
 
@@ -42,10 +43,12 @@ class Portfolio:
             reason = None
             if not overlaps(action, spec["query"]):
                 reason = "outside_period"
-            elif any(a["facility"] == action["facility"] and overlaps(a, action) for a in active):
+            elif any(facility_clash(action, a) for a in active):
                 reason = "facility_committed"
             elif proposal["cost_cents"] > spec["budget_cents"]:
                 reason = "over_budget"
+            elif not self.feasible(action):
+                reason = "facility_committed"
             if reason:
                 excluded.append({"action": action["id"], "reason": reason})
             else:
@@ -53,7 +56,8 @@ class Portfolio:
         conflicts = self.conflicts(candidates)
         combinations = 0
         baseline_burden = Decimal(baseline["total"]["known_weighted_burden"])
-        best = {"actions": [], "cost_cents": 0, "avoided_burden": Decimal(0), "additional_protected": 0}
+        best = {"actions": [], "cost_cents": 0, "avoided_burden": Decimal(0),
+                "additional_protected": Decimal(0)}
         cache = {}
 
         def evaluate(selected, cost):
@@ -71,8 +75,8 @@ class Portfolio:
             analysis = Exposure(snapshot).analyze(spec["query"])
             combinations += 1
             avoided = baseline_burden - Decimal(analysis["total"]["known_weighted_burden"])
-            additional = (analysis["total"]["known_protected_person_days"]
-                          - baseline["total"]["known_protected_person_days"])
+            additional = (as_decimal(analysis["total"]["known_protected_person_days"])
+                          - as_decimal(baseline["total"]["known_protected_person_days"]))
             candidate = {"actions": names, "cost_cents": cost, "avoided_burden": avoided,
                          "additional_protected": additional}
             ranking = (-avoided, -additional, cost, names)
@@ -96,7 +100,8 @@ class Portfolio:
         standalone = []
         for index, candidate in enumerate(candidates):
             outcome = evaluate([index], candidate["cost_cents"])
-            standalone.append({**outcome, "avoided_burden": decimal_text(outcome["avoided_burden"])})
+            standalone.append({**outcome, "avoided_burden": decimal_text(outcome["avoided_burden"]),
+                               "additional_protected": emit_count(outcome["additional_protected"])})
         chosen = deepcopy(self.snapshot)
         for name in best["actions"]:
             chosen["action"][name]["status"] = "active"
@@ -104,10 +109,20 @@ class Portfolio:
         return {"request": spec, "status": "hypothetical", "selected": best["actions"],
                 "cost_cents": best["cost_cents"], "remaining_cents": spec["budget_cents"] - best["cost_cents"],
                 "avoided_weighted_burden": decimal_text(best["avoided_burden"]),
-                "additional_protected_person_days": best["additional_protected"],
+                "additional_protected_person_days": emit_count(best["additional_protected"]),
                 "baseline": baseline["total"], "projected": result["total"], "standalone": standalone,
                 "excluded": excluded, "feasible_combinations": combinations,
                 "conflicts": [[candidates[a]["action"], candidates[b]["action"]] for a, b in sorted(conflicts)]}
+
+    def feasible(self, action):
+        probe = deepcopy(self.snapshot)
+        probe["action"][action["id"]]["status"] = "active"
+        try:
+            Adaptation(probe).validate()
+            Venue(probe).validate()
+        except DomainError:
+            return False
+        return True
 
     @staticmethod
     def conflicts(candidates):
@@ -116,6 +131,6 @@ class Portfolio:
             action = candidate["record"]
             for other in range(index):
                 previous = candidates[other]["record"]
-                if action["facility"] == previous["facility"] and overlaps(action, previous):
+                if facility_clash(action, previous):
                     result.add((other, index))
         return result

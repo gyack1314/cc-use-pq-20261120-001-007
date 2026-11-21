@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from .contracts import (contains, decimal_text, identifier, integer, number,
+from .contracts import (contains, identifier, integer, number,
                         overlaps, period, require, shape)
 
 
@@ -54,14 +54,14 @@ class Residents:
         weighted = Decimal(0)
         detail = []
         for row in population["groups"]:
-            served = protected.get(row["group"], 0)
-            require(0 <= served <= row["count"], "protection", "保护人数不能超过有效人口")
-            exposed = row["count"] - served
-            burden = Decimal(exposed) * Decimal(severity) * Decimal(row["vulnerability"])
+            served = Decimal(protected.get(row["group"], 0))
+            require(Decimal(0) <= served <= row["count"], "protection", "保护人数不能超过有效人口")
+            exposed = Decimal(row["count"]) - served
+            burden = exposed * Decimal(severity) * Decimal(row["vulnerability"])
             total += exposed
             weighted += burden
-            detail.append({**row, "protected": served, "exposed": exposed, "weighted_burden": decimal_text(burden)})
-        return {"exposed": int(total), "weighted_burden": decimal_text(weighted), "groups": detail}
+            detail.append({**row, "protected": served, "exposed": exposed, "weighted_burden": burden})
+        return {"exposed": total, "weighted_burden": weighted, "groups": detail}
 
     def period_coverage(self, zone, start, end):
         from .contracts import days

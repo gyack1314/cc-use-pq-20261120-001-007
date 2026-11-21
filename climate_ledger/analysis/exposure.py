@@ -1,9 +1,38 @@
 from decimal import Decimal
 
 from ..adaptation import Adaptation
-from ..contracts import days, decimal_text, query_spec, ratio, require
+from ..contracts import (as_decimal, days, decimal_text, emit_count, query_spec, ratio, require)
 from ..observatory.readings import Readings
 from ..residents import Residents
+
+
+def emit_action(evidence):
+    return {"action": evidence["action"], "revision": evidence["revision"],
+            "facility": evidence["facility"], "capacity": evidence["capacity"],
+            "used": emit_count(evidence["used"]), "unused": evidence["unused"], "mode": evidence["mode"],
+            "promised_person_hours": decimal_text(evidence["promised_person_hours"]),
+            "delivered_person_hours": decimal_text(evidence["delivered_person_hours"]),
+            "unfulfilled_person_hours": decimal_text(evidence["unfulfilled_person_hours"]),
+            "assignments": [{"group": item["group"], "count": item["count"],
+                             "protected": emit_count(item["protected"]),
+                             "delivered_people": item["delivered_people"],
+                             "delivered_person_hours": decimal_text(item["delivered_person_hours"]),
+                             "mode": item["mode"]}
+                            for item in evidence["assignments"]]}
+
+
+def emit_daily(row):
+    result = dict(row)
+    for field in ("protected", "exposed", "unfulfilled_people"):
+        result[field] = None if row[field] is None else emit_count(row[field])
+    for field in ("weighted_burden", "unfulfilled_person_hours", "delivered_person_hours"):
+        result[field] = None if row[field] is None else decimal_text(row[field])
+    result["groups"] = [{**group, "protected": emit_count(group["protected"]),
+                         "exposed": emit_count(group["exposed"]),
+                         "weighted_burden": decimal_text(group["weighted_burden"])}
+                        for group in row["groups"]]
+    result["actions"] = [emit_action(item) for item in row["actions"]]
+    return result
 
 
 class Exposure:
@@ -13,14 +42,16 @@ class Exposure:
         self.residents = Residents(snapshot)
         self.adaptation = Adaptation(snapshot)
 
-    def daily(self, zone, metric, when, minimum_coverage):
+    def compute(self, zone, metric, when, minimum_coverage):
         weather = self.readings.zone_day(zone, metric, when, minimum_coverage)
         population = self.residents.day(zone, when)
         usable = weather["usable"] and population["complete"]
         result = {"zone": zone, "day": when, "usable": usable, "weather": weather,
                   "population": population, "hazardous": weather["hazardous"],
                   "protected": None, "exposed": None, "weighted_burden": None,
-                  "groups": [], "actions": [], "reason": []}
+                  "groups": [], "actions": [], "reason": [], "interrupted": False,
+                  "unfulfilled_people": None, "unfulfilled_person_hours": None,
+                  "delivered_person_hours": None}
         if not weather["usable"]:
             result["reason"].append("observation_gap")
         if not population["complete"]:
@@ -29,81 +60,103 @@ class Exposure:
             return result
         allocation = self.adaptation.allocate(zone, metric, when, hazardous=weather["hazardous"])
         burden = self.residents.burden(zone, when, weather["severity"], allocation["protected"])
+        exposed = burden["exposed"]
+        groups = burden["groups"]
         if not weather["hazardous"]:
-            burden["exposed"] = 0
-            for group in burden["groups"]:
-                group["exposed"] = 0
-        result.update(protected=sum(allocation["protected"].values()), exposed=burden["exposed"],
-                      weighted_burden=burden["weighted_burden"], groups=burden["groups"], actions=allocation["actions"])
+            exposed = Decimal(0)
+            groups = [{**group, "exposed": Decimal(0)} for group in groups]
+        result.update(protected=sum(allocation["protected"].values(), Decimal(0)), exposed=exposed,
+                      weighted_burden=burden["weighted_burden"], groups=groups,
+                      actions=allocation["actions"], interrupted=allocation["interrupted"],
+                      unfulfilled_people=allocation["unfulfilled_people"],
+                      unfulfilled_person_hours=allocation["unfulfilled_person_hours"],
+                      delivered_person_hours=allocation["delivered_person_hours"])
         return result
+
+    def daily(self, zone, metric, when, minimum_coverage):
+        return emit_daily(self.compute(zone, metric, when, minimum_coverage))
 
     def analyze(self, spec):
         spec = query_spec(spec)
         self.readings.catalog.metric(spec["metric"])
         require(set(spec["zones"]).issubset(self.snapshot["zone"]), "zone", "查询含未知行政区")
-        daily = [self.daily(zone, spec["metric"], when, spec["minimum_coverage"])
-                 for zone in spec["zones"] for when in days(spec["start"], spec["end"])]
-        strata = [self.summarize(zone, [row for row in daily if row["zone"] == zone]) for zone in spec["zones"]]
+        rows = [self.compute(zone, spec["metric"], when, spec["minimum_coverage"])
+                for zone in spec["zones"] for when in days(spec["start"], spec["end"])]
+        strata = [self.summarize(zone, [row for row in rows if row["zone"] == zone]) for zone in spec["zones"]]
         qualified = all(row["complete"] for row in strata)
-        all_known = self.summarize("all", daily)
+        all_known = self.summarize("all", rows)
         return {"query": spec, "status": "qualified" if qualified else "incomplete", "strata": strata,
-                "total": all_known, "daily": daily, "episodes": self.episodes(daily)}
+                "total": all_known, "daily": [emit_daily(row) for row in rows],
+                "episodes": self.episodes(rows)}
 
     @staticmethod
-    def summarize(zone, daily):
-        valid = [row for row in daily if row["usable"]]
+    def summarize(zone, rows):
+        valid = [row for row in rows if row["usable"]]
         hazard = [row for row in valid if row["hazardous"]]
         population_days = sum(row["population"]["population"] for row in valid)
         hazard_population = sum(row["population"]["population"] for row in hazard)
-        protected = sum(row["protected"] for row in hazard)
-        exposed = sum(row["exposed"] for row in hazard)
-        burden = sum((Decimal(row["weighted_burden"]) for row in valid), Decimal(0))
-        complete = len(valid) == len(daily)
-        return {"zone": zone, "complete": complete, "expected_zone_days": len(daily),
-                "usable_zone_days": len(valid), "unknown_zone_days": len(daily) - len(valid),
+        protected = sum((row["protected"] for row in hazard), Decimal(0))
+        exposed = sum((row["exposed"] for row in hazard), Decimal(0))
+        burden = sum((row["weighted_burden"] for row in valid), Decimal(0))
+        unfulfilled = sum((row["unfulfilled_person_hours"] for row in valid), Decimal(0))
+        delivered = sum((row["delivered_person_hours"] for row in valid), Decimal(0))
+        complete = len(valid) == len(rows)
+        return {"zone": zone, "complete": complete, "expected_zone_days": len(rows),
+                "usable_zone_days": len(valid), "unknown_zone_days": len(rows) - len(valid),
                 "known_population_days": population_days, "known_hazard_population_days": hazard_population,
-                "known_protected_person_days": protected, "known_exposed_person_days": exposed,
+                "known_protected_person_days": emit_count(protected),
+                "known_exposed_person_days": emit_count(exposed),
                 "known_weighted_burden": decimal_text(burden),
+                "known_unfulfilled_person_hours": decimal_text(unfulfilled),
+                "known_delivered_person_hours": decimal_text(delivered),
                 "hazard_fraction": ratio(hazard_population, population_days) if complete else None,
                 "protection_fraction": ratio(protected, hazard_population) if complete else None,
-                "coverage_fraction": ratio(len(valid), len(daily)),
+                "coverage_fraction": ratio(len(valid), len(rows)),
                 "groups": Exposure.group_summary(valid, complete)}
 
     @staticmethod
-    def group_summary(daily, complete):
+    def group_summary(valid, complete):
         groups = {}
-        for row in daily:
+        for row in valid:
             for group in row["groups"]:
-                target = groups.setdefault(group["group"], {"population_days": 0, "hazard_population_days": 0,
-                                                            "protected_person_days": 0, "weighted_burden": Decimal(0)})
+                target = groups.setdefault(group["group"],
+                                           {"population_days": 0, "hazard_population_days": 0,
+                                            "protected_person_days": Decimal(0),
+                                            "weighted_burden": Decimal(0)})
                 target["population_days"] += group["count"]
                 if row["hazardous"]:
                     target["hazard_population_days"] += group["count"]
                     target["protected_person_days"] += group["protected"]
-                target["weighted_burden"] += Decimal(group["weighted_burden"])
-        return [{"group": key, **value, "weighted_burden": decimal_text(value["weighted_burden"]),
-                 "protection_fraction": ratio(value["protected_person_days"], value["hazard_population_days"]) if complete else None}
+                target["weighted_burden"] += group["weighted_burden"]
+        return [{"group": key, "population_days": value["population_days"],
+                 "hazard_population_days": value["hazard_population_days"],
+                 "protected_person_days": emit_count(value["protected_person_days"]),
+                 "weighted_burden": decimal_text(value["weighted_burden"]),
+                 "protection_fraction": ratio(value["protected_person_days"],
+                                              value["hazard_population_days"]) if complete else None}
                 for key, value in sorted(groups.items())]
 
     @staticmethod
-    def episodes(daily):
+    def episodes(rows):
         result = []
-        for zone in sorted({row["zone"] for row in daily}):
+        for zone in sorted({row["zone"] for row in rows}):
             current = None
-            for row in sorted((r for r in daily if r["zone"] == zone), key=lambda r: r["day"]):
+            for row in sorted((r for r in rows if r["zone"] == zone), key=lambda r: r["day"]):
                 if not row["usable"] or not row["hazardous"]:
                     if current:
                         current["right_boundary"] = "unknown" if not row["usable"] else "observed"
+                        current["exposed_person_days"] = emit_count(current["exposed_person_days"])
                         result.append(current)
                         current = None
                     continue
                 if current is None:
                     current = {"zone": zone, "start": row["day"], "end": row["day"], "days": 0,
-                               "exposed_person_days": 0, "right_boundary": "window"}
+                               "exposed_person_days": Decimal(0), "right_boundary": "window"}
                 current["end"] = row["day"]
                 current["days"] += 1
                 current["exposed_person_days"] += row["exposed"]
             if current:
+                current["exposed_person_days"] = emit_count(current["exposed_person_days"])
                 result.append(current)
         return result
 
@@ -123,10 +176,11 @@ class Exposure:
                 deferred.append({"zone": zone, "reason": "没有有效人口分母", "unknown_zone_days": 0})
                 continue
             rate = burden / population_days
-            uncovered = stratum["known_exposed_person_days"]
+            uncovered = as_decimal(stratum["known_exposed_person_days"])
             hazard = stratum["known_hazard_population_days"]
             rows.append({"zone": zone, "weighted_burden": decimal_text(burden),
-                         "burden_per_person_day": decimal_text(rate), "uncovered_person_days": uncovered,
+                         "burden_per_person_day": decimal_text(rate),
+                         "uncovered_person_days": emit_count(uncovered),
                          "uncovered_fraction": ratio(uncovered, hazard),
                          "hazard_population_days": hazard, "groups": stratum["groups"]})
         rows.sort(key=lambda row: (-Decimal(row["burden_per_person_day"]),

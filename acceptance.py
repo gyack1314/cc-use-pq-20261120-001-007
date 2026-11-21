@@ -43,9 +43,25 @@ def run():
         with Application(root / "backup.sqlite3") as restored:
             assert restored.audit()["batches"] == 2
             assert restored.publication.release("july-v1")["digest"] == release["digest"]
+        with Application(root / "venue.sqlite3") as venue_app:
+            venue_app.ingest(load("city.json"))
+            venue_app.ingest(load("venue.json"))
+            venue_view = venue_app.analyze(load("exposure.json"))
+            closed = next(row for row in venue_view["daily"] if row["zone"] == "river" and row["day"] == "2026-07-03")
+            assert closed["protected"] == "8.333333" and closed["interrupted"]
+            assert closed["unfulfilled_people"] == 5 and closed["unfulfilled_person_hours"] == "65.000000"
+            assert venue_view["total"]["known_protected_person_days"] == "38.333333"
+            operations = venue_app.operations(load("operations.json"))
+            adult = next(row for row in operations["commitments"] if row["group"] == "adult")
+            assert adult["gap_people"] == 5 and adult["delivered_people"] == 5
+            assert venue_app.compare(load("study.json"))["status"] == "insufficient"
+            assert venue_app.analyze(load("exposure.json"), seq=1)["total"] == exposure["total"]
+            assert venue_app.audit()["status"] == "verified"
         print(canonical({"status": "通过", "synthetic": True, "exposure": exposure["total"],
                          "study_estimate": study["estimate"], "portfolio": plan["selected"],
-                         "corrected_zone_days": len(changed["affected_zone_days"]), "archive_verified": True}))
+                         "corrected_zone_days": len(changed["affected_zone_days"]),
+                         "closure_day_protected": closed["protected"],
+                         "closure_gap_people": adult["gap_people"], "archive_verified": True}))
 
 
 if __name__ == "__main__":

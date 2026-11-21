@@ -49,7 +49,9 @@ class Reconciliation:
     @staticmethod
     def daily_difference(old, new):
         result = {}
-        for field in ("usable", "hazardous", "protected", "exposed", "weighted_burden", "reason"):
+        for field in ("usable", "hazardous", "protected", "exposed", "weighted_burden", "reason",
+                      "interrupted", "unfulfilled_people", "unfulfilled_person_hours",
+                      "delivered_person_hours"):
             if old[field] != new[field]:
                 result[field] = {"before": old[field], "after": new[field]}
         for field in ("value", "coverage", "metric_revision"):

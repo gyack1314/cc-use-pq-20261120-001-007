@@ -3,7 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from .contracts import canonical, fingerprint, identifier, require, text
+from .contracts import as_decimal, canonical, fingerprint, identifier, require, text
 
 
 class Publication:
@@ -24,7 +24,7 @@ class Publication:
             for row in analysis["daily"]:
                 if row["usable"] and not row["weather"]["evidence"]:
                     reasons.append("有效观测缺少来源依据")
-                if row["usable"] and row["protected"] > row["population"]["population"]:
+                if row["usable"] and as_decimal(row["protected"]) > row["population"]["population"]:
                     reasons.append("保护人数超过有效分母")
         else:
             if analysis.get("status") != "qualified" or analysis.get("estimate") is None:

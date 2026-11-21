@@ -25,7 +25,7 @@ def parser():
     backup.add_argument("destination")
     ingest = commands.add_parser("ingest", help="原子导入资料包")
     ingest.add_argument("input")
-    for name in ("analyze", "compare", "diagnose", "plan", "equity", "priorities"):
+    for name in ("analyze", "compare", "diagnose", "plan", "equity", "priorities", "operations"):
         command = commands.add_parser(name, help="读取分析条件并生成结果")
         command.add_argument("input")
         if name != "diagnose":
@@ -76,7 +76,7 @@ def dispatch(app, args):
         return app.backup(args.destination)
     if args.command == "ingest":
         return app.ingest(load(args.input))
-    if args.command in ("analyze", "compare", "plan", "equity", "priorities"):
+    if args.command in ("analyze", "compare", "plan", "equity", "priorities", "operations"):
         return getattr(app, args.command)(load(args.input), seq=args.seq)
     if args.command == "diagnose":
         return app.diagnose(load(args.input))

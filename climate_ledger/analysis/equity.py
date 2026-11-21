@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from ..adaptation import Adaptation
-from ..contracts import days, decimal_text, query_spec, ratio, require
+from ..contracts import days, decimal_text, emit_count, query_spec, ratio, require
 from ..observatory.readings import Readings
 from ..residents import Residents
 
@@ -60,7 +60,11 @@ class Equity:
             denominator = totals["population_days"]
             lower_rate = totals["lower_burden"] / denominator if denominator else None
             upper_rate = totals["upper_burden"] / denominator if denominator else None
-            rows.append({"zone": zone, "group": group, **totals,
+            rows.append({"zone": zone, "group": group,
+                         "population_days": totals["population_days"],
+                         "known_hazard_days": totals["known_hazard_days"],
+                         "known_protected_days": emit_count(totals["known_protected_days"]),
+                         "unknown_population_days": totals["unknown_population_days"],
                          "lower_burden": decimal_text(totals["lower_burden"]),
                          "upper_burden": decimal_text(totals["upper_burden"]),
                          "lower_rate": decimal_text(lower_rate), "upper_rate": decimal_text(upper_rate),

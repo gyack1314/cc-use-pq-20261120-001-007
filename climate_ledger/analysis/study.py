@@ -64,12 +64,19 @@ class Study:
         if row["population"]["population"] == 0:
             return "zero_population"
         active = self.adaptation.is_treated(row["zone"], metric, row["day"])
-        if not treated and active:
-            return "control_contaminated"
-        if treated and phase == "before" and active:
+        interrupted = row["interrupted"]
+        delivered = Decimal(row["delivered_person_hours"]) > 0
+        if not treated:
+            if active or interrupted or delivered:
+                return "control_contaminated"
+            return None
+        if phase == "before" and active:
             return "treated_before_activation"
-        if treated and phase == "after" and not active:
-            return "action_not_active"
+        if phase == "after":
+            if not active:
+                return "action_not_active"
+            if interrupted:
+                return "protection_interrupted"
         return None
 
     @staticmethod

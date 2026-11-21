@@ -78,6 +78,42 @@ def day(value, field="day"):
     return value
 
 
+def clock(value, field="time"):
+    require(isinstance(value, str), "time", f"{field}需要HH:MM时间")
+    parts = value.split(":")
+    require(len(parts) == 2 and all(part.isascii() and part.isdecimal() and len(part) == 2 for part in parts),
+            "time", f"{field}需要HH:MM时间")
+    hour, minute = int(parts[0]), int(parts[1])
+    require((0 <= hour <= 23 and 0 <= minute <= 59) or (hour, minute) == (24, 0),
+            "time", f"{field}超出合理时刻")
+    return value
+
+
+def minutes(value):
+    hour, minute = value.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def moment(value, field="moment"):
+    require(isinstance(value, str) and value.count("T") == 1, "date", f"{field}需要YYYY-MM-DDTHH:MM")
+    day_part, time_part = value.split("T")
+    day(day_part, field)
+    clock(time_part, field)
+    require(time_part != "24:00", "date", f"{field}时刻无效")
+    return value
+
+
+def emit_count(value):
+    result = value if isinstance(value, Decimal) else Decimal(str(value))
+    if result == result.to_integral_value():
+        return int(result)
+    return decimal_text(result)
+
+
+def as_decimal(value):
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
 def period(start, end, *, limit=3660):
     start, end = day(start, "start"), day(end, "end")
     span = (date.fromisoformat(end) - date.fromisoformat(start)).days
@@ -127,7 +163,8 @@ def row_key(kind, record):
     return record["id"]
 
 
-KINDS = ("zone", "metric", "station", "population", "action", "reading")
+KINDS = ("zone", "metric", "station", "population", "action", "reading",
+         "window", "service", "closure", "arrangement")
 
 
 def query_spec(value):

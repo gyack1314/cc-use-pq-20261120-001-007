@@ -13,10 +13,17 @@ CSV_FIELDS = {
     "station": ("id", "revision", "zone", "start", "end", "weight", "metrics"),
     "reading": ("station", "metric", "day", "revision", "value", "unit", "quality"),
     "population": ("id", "revision", "zone", "group", "start", "end", "count", "vulnerability"),
-    "action": ("id", "revision", "name", "zone", "metric", "start", "end", "status", "capacity", "groups", "priority", "facility"),
+    "action": ("id", "revision", "name", "zone", "metric", "start", "end", "status", "capacity",
+               "groups", "priority", "facility", "claims"),
+    "window": ("id", "revision", "facility", "day", "start", "end", "capacity"),
+    "service": ("id", "revision", "action", "facility", "day", "group", "count", "start", "end",
+                "status", "arrangement"),
+    "closure": ("id", "revision", "facility", "day", "from", "to", "occurred", "confirmed"),
+    "arrangement": ("id", "revision", "action", "day", "group", "count", "window", "start", "end", "status"),
 }
 INTEGER_FIELDS = {"revision", "count", "capacity", "priority"}
-ARRAY_FIELDS = {"metrics", "groups"}
+ARRAY_FIELDS = {"metrics", "groups", "claims"}
+NULLABLE_FIELDS = {"value", "to", "arrangement"}
 
 
 def decode_csv(content, kind):
@@ -40,11 +47,14 @@ def decode_csv(content, kind):
                     require(item.isascii() and item.isdecimal(), "csv", "整数字段格式错误", field=field, line=line)
                     value[field] = int(item)
                 elif field in ARRAY_FIELDS:
+                    if item == "":
+                        value[field] = []
+                        continue
                     try:
                         value[field] = json.loads(item)
                     except ValueError:
                         raise DomainError("csv", "数组列需要JSON数组", field=field, line=line) from None
-                elif field == "value" and item == "":
+                elif item == "" and field in NULLABLE_FIELDS:
                     value[field] = None
                 else:
                     value[field] = item
@@ -71,9 +81,9 @@ def encode_csv(records, kind):
         value = NORMALIZERS[kind](record)
         row = {}
         for key in CSV_FIELDS[kind]:
-            item = value[key]
+            item = value.get(key)
             if key in ARRAY_FIELDS:
-                row[key] = canonical(item)
+                row[key] = canonical(item if item is not None else [])
             elif item is None:
                 row[key] = ""
             else:
@@ -100,8 +110,10 @@ def snapshot_csv(snapshot, directory):
     root.mkdir(parents=True, exist_ok=True)
     outputs = []
     for kind in CSV_FIELDS:
-        path = root / (kind + ".csv")
         records = [row for _, row in sorted(snapshot[kind].items())]
+        if not records:
+            continue
+        path = root / (kind + ".csv")
         path.write_text(encode_csv(records, kind), encoding="utf-8", newline="\n")
         outputs.append({"kind": kind, "path": str(path), "rows": len(records)})
     return outputs
